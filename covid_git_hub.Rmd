@@ -1,0 +1,251 @@
+---
+title: "covid-git hub"
+author: "Joshua Salazar Obando"
+date: "21/3/2020"
+output: html_document
+---
+
+```{r}
+if(!require(magrittr)) install.packages("magrittr", repos = "http://cran.us.r-project.org")
+if(!require(rvest)) install.packages("rvest", repos = "http://cran.us.r-project.org")
+if(!require(readxl)) install.packages("readxl", repos = "http://cran.us.r-project.org")
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if(!require(maps)) install.packages("maps", repos = "http://cran.us.r-project.org")
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if(!require(reshape2)) install.packages("reshape2", repos = "http://cran.us.r-project.org")
+if(!require(ggiraph)) install.packages("ggiraph", repos = "http://cran.us.r-project.org")
+if(!require(RColorBrewer)) install.packages("RColorBrewer", repos = "http://cran.us.r-project.org")
+if(!require(leaflet)) install.packages("leaflet", repos = "http://cran.us.r-project.org")
+if(!require(plotly)) install.packages("plotly", repos = "http://cran.us.r-project.org")
+if(!require(geojsonio)) install.packages("geojsonio", repos = "http://cran.us.r-project.org")
+if(!require(shiny)) install.packages("shiny", repos = "http://cran.us.r-project.org")
+if(!require(shinyWidgets)) install.packages("shinyWidgets", repos = "http://cran.us.r-project.org")
+if(!require(shinydashboard)) install.packages("shinydashboard", repos = "http://cran.us.r-project.org")
+if(!require(shinythemes)) install.packages("shinythemes", repos = "http://cran.us.r-project.org")
+```
+
+```{r}
+source("jhu_data_full.R")
+```
+
+
+```{r}
+# set mapping colour for each outbreak
+covid_col = "#cc4c02"
+covid_other_col = "#662506"
+
+#options(scipen = 999)
+```
+
+
+
+```{r}
+library(readr)
+cv_cases <- read_csv("input_data/coronavirus.csv")
+countries <- read_csv("input_data/countries_codes_and_coordinates.csv")
+worldcountry = geojson_read("input_data/countries.geo.json", what = "sp")
+country_geoms = read.csv("input_data/country_geoms.csv")
+
+```
+
+```{r}
+# extract time stamp from cv_cases
+update = tail(cv_cases$last_update,1) 
+```
+
+```{r}
+if (all(unique(cv_cases$country) %in% unique(countries$country))==FALSE) { print("Error: inconsistent country names")}
+
+# extract dates from cv data
+if (any(grepl("/", cv_cases$date))) { 
+  cv_cases$date = format(as.Date(cv_cases$date, format="%d/%m/%Y"),"%Y-%m-%d") 
+} else { cv_cases$date = as.Date(cv_cases$date, format="%Y-%m-%d") }
+cv_cases$date = as.Date(cv_cases$date)
+cv_min_date = as.Date(min(cv_cases$date),"%Y-%m-%d")
+current_date = as.Date(max(cv_cases$date),"%Y-%m-%d")
+cv_max_date_clean = format(as.POSIXct(current_date),"%d %B %Y")
+```
+
+
+```{r}
+# merge cv data with country data and extract key summary variables
+cv_cases = merge(cv_cases, countries, by = "country")
+cv_cases = cv_cases[order(cv_cases$date),]
+cv_cases$per100k = as.numeric(format(round(cv_cases$cases/(cv_cases$population/100000),1),nsmall=1))
+cv_cases$newper100k = as.numeric(format(round(cv_cases$new_cases/(cv_cases$population/100000),1),nsmall=1))
+cv_cases$activeper100k = as.numeric(format(round(cv_cases$active_cases/(cv_cases$population/100000),1),nsmall=1))
+cv_cases$million_pop = as.numeric(cv_cases$population>1e6)
+cv_today = subset(cv_cases, date==current_date) 
+current_case_count = sum(cv_today$cases)
+current_case_count_China = sum(cv_today$cases[cv_today$country=="Mainland China"])
+current_case_count_other = sum(cv_today$cases[cv_today$country!="Mainland China"])
+current_death_count = sum(cv_today$deaths)
+
+```
+
+```{r}
+# select large countries for mapping polygons
+cv_large_countries = cv_today %>% filter(alpha3 %in% worldcountry$id)
+if (all(cv_large_countries$alpha3 %in% worldcountry$id)==FALSE) { print("Error: inconsistent country names")}
+cv_large_countries = cv_large_countries[order(cv_large_countries$alpha3),]
+
+```
+
+```{r}
+# create plotting parameters for map
+bins = c(0,1,10,20,50,100)
+cv_pal <- colorBin("Oranges", domain = cv_large_countries$per100k, bins = bins)
+plot_map <- worldcountry[worldcountry$id %in% cv_large_countries$alpha3, ]
+```
+
+#MODIFICAR 
+
+```{r}
+# creat cv base map 
+basemap = leaflet(plot_map) %>% 
+  addTiles() %>% 
+  addLayersControl(
+    position = "bottomright",
+    overlayGroups = c("2019-COVID (active)", "2019-COVID (new)", "2019-COVID (cumulative)"),
+    options = layersControlOptions(collapsed = FALSE)) %>% 
+  hideGroup(c("2019-COVID (new)", "2019-COVID (cumulative)"))  %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  #fitBounds(~-100,-50,~80,80) %>%
+  addLegend("bottomright", pal = cv_pal, values = ~cv_large_countries$per100k,
+            title = "<small>Active cases per 100,000</small>") %>%
+  fitBounds(0,-25,90,65) # alternative coordinates for closer zoom
+```
+
+
+```{r}
+# sum cv case counts by date
+cv_aggregated = aggregate(cv_cases$cases, by=list(Category=cv_cases$date), FUN=sum)
+cv_aggregated_China = aggregate(subset(cv_cases, country=="Mainland China")$cases, by=list(Category=subset(cv_cases, country=="Mainland China")$date), FUN=sum)
+cv_aggregated_other = aggregate(subset(cv_cases, country!="Mainland China")$cases, by=list(Category=subset(cv_cases, country!="Mainland China")$date), FUN=sum)
+names(cv_aggregated) = names(cv_aggregated_China) = names(cv_aggregated_other) = c("date", "cases")
+```
+
+
+```{r}
+# add variable for new cases in last 24 hours
+for (i in 1:nrow(cv_aggregated)) { 
+  if (i==1) { cv_aggregated$new[i] = cv_aggregated_China$new[i] = cv_aggregated_other$new[i] = NA }
+  if (i>1) { 
+    cv_aggregated$new[i] = cv_aggregated$cases[i] - cv_aggregated$cases[i-1] 
+    cv_aggregated_China$new[i] = cv_aggregated_China$cases[i] - cv_aggregated_China$cases[i-1] 
+    cv_aggregated_other$new[i] = cv_aggregated_other$cases[i] - cv_aggregated_other$cases[i-1] 
+  }
+}
+```
+
+
+```{r}
+# add plotting region
+cv_aggregated$region = "Global"
+cv_aggregated_China$region = "Mainland China"
+cv_aggregated_other$region = "Other"
+cv_aggregated = rbind(cv_aggregated, cv_aggregated_China, cv_aggregated_other)
+cv_aggregated$region = factor(cv_aggregated$region, levels=c("Global", "Mainland China", "Other"))
+```
+
+
+
+```{r}
+# function to plot cumulative cases by date
+cv_aggregated$date = as.Date(cv_aggregated$date,"%Y-%m-%d")
+cumulative_plot = function(cv_aggregated, plot_date) {
+  plot_df = subset(cv_aggregated, date<=plot_date & region!="Global")
+  plot_df_new = subset(cv_aggregated, date<=plot_date & region=="Global")
+  g1 = ggplot(plot_df, aes(x = date, y = cases, color = region)) + geom_line() + geom_point(size = 1, alpha = 0.8) +
+   ylab("cumulative cases") + theme_bw() + 
+   scale_colour_manual(values=c(covid_col, covid_other_col)) +
+   xlim(c(cv_min_date,current_date)) + 
+   scale_y_continuous(limits=c(0,current_case_count_other+1000), labels = function(l) {trans = l / 1000; paste0(trans, "K")}) +
+   theme(legend.title = element_blank(), legend.position = "", plot.title = element_text(size=10), 
+         plot.margin = margin(5, 12, 5, 5))
+  g1
+}
+```
+
+
+```{r}
+# function to plot new cases by date
+new_cases_plot = function(cv_aggregated, plot_date) {
+  plot_df_new = subset(cv_aggregated, date<=plot_date & region!="Global")
+  g1 = ggplot(plot_df_new, aes(x = date, y = new, fill = region)) + 
+    geom_bar(position="stack", stat="identity") + 
+    ylab("new cases") + theme_bw() + 
+    scale_fill_manual(values=c(covid_col, covid_other_col)) +
+    xlim(c(cv_min_date,current_date)) + 
+    scale_y_continuous(limits=c(0,20000), labels = function(l) {trans = l / 1000; paste0(trans, "K")}) +
+    theme(legend.title = element_blank(), legend.position = "", plot.title = element_text(size=10), 
+          plot.margin = margin(5, 12, 5, 5))
+    g1
+}
+```
+
+
+```{r}
+# test function
+#cumulative_plot(cv_aggregated, current_date)
+ #new_cases_plot(cv_aggregated, current_date)
+
+```
+
+#MODIFICAR 
+```{r}
+# assign colours to countries to ensure consistency between plots 
+cls = rep(c(brewer.pal(8,"Dark2"), brewer.pal(10, "Paired"), brewer.pal(12, "Set3"), brewer.pal(8,"Set2"), brewer.pal(9, "Set1"), brewer.pal(8, "Accent"),  brewer.pal(9, "Pastel1"),  brewer.pal(8, "Pastel2")),3)
+country_cols = cls[1:length(unique(cv_cases$country))]
+names(country_cols) = unique(cv_cases$country)
+```
+
+
+# GRAFICOS 
+```{r}
+country_cases_plot = function(cv_cases) {
+  g1 = ggplot(cv_cases, aes(x = date, y = new_outcome, fill = country, 
+                               text = paste0(format(date, "%d %B %Y"), "\n", country, ": ",new_outcome))) + 
+    geom_bar(position="stack", stat="identity") + 
+    ylab("new") + theme_bw() + 
+    scale_fill_manual(values=country_cols) +
+    xlim(c(cv_min_date,current_date+1)) + 
+    theme(legend.title = element_blank(), legend.position = "", plot.title = element_text(size=10))
+  ggplotly(g1, tooltip = c("text")) %>% layout(legend = list(font = list(size=11)))
+}
+```
+
+
+```{r}
+country_cases_cumulative = function(cv_cases) {
+  g1 = ggplot(cv_cases, aes(x = date, y = outcome, colour = country, group = 1,
+                            text = paste0(format(date, "%d %B %Y"), "\n", country, ": ",outcome))) + 
+    geom_line(alpha=0.8) + geom_point(size = 1, alpha = 0.8) +
+    ylab("cumulative") + theme_bw() + 
+    scale_colour_manual(values=country_cols) +
+    xlim(c(cv_min_date,current_date+1)) + 
+    theme(legend.title = element_blank(), legend.position = "", plot.title = element_text(size=10))
+  ggplotly(g1, tooltip = c("text")) %>% layout(legend = list(font = list(size=11)))
+}
+```
+
+
+```{r}
+country_cases_cumulative_log = function(cv_cases) {
+  g1 = ggplot(cv_cases, aes(x = date, y = outcome, colour = country, group = 1,
+                            text = paste0(format(date, "%d %B %Y"), "\n", country, ": ",outcome))) + 
+    geom_line(alpha=0.8) + geom_point(size = 1, alpha = 0.8) +
+    ylab("cumulative (log10)") + theme_bw() + 
+    scale_y_continuous(trans="log10") +
+    scale_colour_manual(values=country_cols) +
+    xlim(c(cv_min_date,current_date+1)) + 
+    theme(legend.title = element_blank(), legend.position = "", plot.title = element_text(size=10))
+  ggplotly(g1, tooltip = c("text")) %>% layout(legend = list(font = list(size=11)))
+}
+
+```
+
+
+
+
+
